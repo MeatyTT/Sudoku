@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Sudoku Solver</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#eef1ef;
+    --surface:#ffffff;
+    --surface-2:#f4f6f5;
+    --ink:#1b2420;
+    --ink-soft:#5c6a63;
+    --line:#c7d0cb;
+    --line-strong:#1b2420;
+    --accent:#245a43;
+    --accent-ink:#ffffff;
+    --accent-soft:#dcece2;
+    --given-bg:#e6ebe8;
+    --error:#a3352a;
+    --error-soft:#f6dfdb;
+    --success:#1c7a4d;
+    --success-soft:#dcf0e3;
+    --focus-ring:#245a43;
+    --shadow: 0 1px 2px rgba(27,36,32,0.06), 0 8px 24px -12px rgba(27,36,32,0.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#121613;
+      --surface:#1a201c;
+      --surface-2:#20261f;
+      --ink:#e9efe9;
+      --ink-soft:#9caa9f;
+      --line:#333c34;
+      --line-strong:#e9efe9;
+      --accent:#6fd6a3;
+      --accent-ink:#0d1a13;
+      --accent-soft:#1f3428;
+      --given-bg:#232b25;
+      --error:#ff9186;
+      --error-soft:#3a2320;
+      --success:#7fe0ac;
+      --success-soft:#1c3226;
+      --focus-ring:#6fd6a3;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+
+  *{box-sizing:border-box;}
+  html,body{background:var(--bg);}
+  body{
+    color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    margin:0;
+    padding-inline:20px;
+    padding-block:32px 48px;
+    display:flex;
+    justify-content:center;
+  }
+  .page{
+    width:100%;
+    max-width:920px;
+    display:flex;
+    flex-direction:column;
+    gap:28px;
+  }
+  header{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .eyebrow{
+    font-family:"IBM Plex Mono", ui-monospace, monospace;
+    font-size:12.5px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+  }
+  h1{
+    font-family:"Fraunces", Georgia, serif;
+    font-optical-sizing:auto;
+    font-weight:600;
+    font-size:clamp(28px, 4vw, 38px);
+    line-height:1.05;
+    margin:0;
+    text-wrap:balance;
+    letter-spacing:-0.01em;
+  }
+  .sub{
+    color:var(--ink-soft);
+    font-size:15px;
+    max-width:52ch;
+    line-height:1.5;
+    margin:0;
+  }
+
+  .layout{
+    display:flex;
+    gap:32px;
+    align-items:flex-start;
+    flex-wrap:wrap;
+  }
+
+  .board-wrap{
+    flex:1 1 420px;
+    max-width:480px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+
+  .board{
+    width:100%;
+    aspect-ratio:1/1;
+    background:var(--line-strong);
+    display:grid;
+    grid-template-columns:repeat(9,1fr);
+    grid-template-rows:repeat(9,1fr);
+    gap:1px;
+    border:2px solid var(--line-strong);
+    border-radius:4px;
+    overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .cell{
+    width:100%;
+    height:100%;
+    border:0;
+    background:var(--surface);
+    color:var(--ink);
+    font-family:"IBM Plex Mono", ui-monospace, monospace;
+    font-weight:600;
+    font-size:clamp(16px, 3.4vw, 22px);
+    text-align:center;
+    padding:0;
+    -moz-appearance:textfield;
+    font-variant-numeric:tabular-nums;
+    transition:background-color .12s ease, color .12s ease;
+  }
+  .cell::-webkit-outer-spin-button,.cell::-webkit-inner-spin-button{display:none;}
+  .cell:focus{
+    outline:none;
+    background:var(--accent-soft);
+    box-shadow:inset 0 0 0 2px var(--focus-ring);
+    position:relative;
+    z-index:2;
+  }
+  .cell.given{
+    background:var(--given-bg);
+    color:var(--ink);
+  }
+  .cell.solved{
+    color:var(--success);
+  }
+  .cell.conflict{
+    background:var(--error-soft);
+    color:var(--error);
+  }
+  /* thick box borders every 3 cells, via box-shadow trick on right/bottom edges */
+  .cell[data-col="2"], .cell[data-col="5"]{ box-shadow: inset -2px 0 0 var(--line-strong); }
+  .cell[data-row="2"], .cell[data-row="5"]{ box-shadow: inset 0 -2px 0 var(--line-strong); }
+  .cell[data-col="2"][data-row="2"], .cell[data-col="5"][data-row="2"],
+  .cell[data-col="2"][data-row="5"], .cell[data-col="5"][data-row="5"]{
+    box-shadow: inset -2px -2px 0 var(--line-strong);
+  }
+  .cell.conflict[data-col="2"], .cell.conflict[data-col="5"]{ box-shadow: inset -2px 0 0 var(--line-strong), inset 0 0 0 999px var(--error-soft); }
+  .cell.conflict[data-row="2"], .cell.conflict[data-row="5"]{ box-shadow: inset 0 -2px 0 var(--line-strong), inset 0 0 0 999px var(--error-soft); }
+  .cell:focus[data-col="2"], .cell:focus[data-col="5"], .cell:focus[data-row="2"], .cell:focus[data-row="5"]{
+    box-shadow:inset 0 0 0 2px var(--focus-ring);
+  }
+
+  .status{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    min-height:22px;
+    font-size:13.5px;
+    color:var(--ink-soft);
+    font-family:"IBM Plex Mono", ui-monospace, monospace;
+  }
+  .status.error{color:var(--error);}
+  .status.success{color:var(--success);}
+  .status .dot{
+    width:6px;height:6px;border-radius:50%;
+    background:currentColor;
+    flex:none;
+  }
+
+  .panel{
+    flex:1 1 260px;
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+  }
+  .card{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:18px 20px;
+    box-shadow:var(--shadow);
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .card h2{
+    font-family:"Fraunces", Georgia, serif;
+    font-weight:600;
+    font-size:16px;
+    margin:0;
+  }
+  .actions{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  button{
+    font-family:"IBM Plex Sans", sans-serif;
+    font-weight:600;
+    font-size:14px;
+    border-radius:7px;
+    padding:10px 16px;
+    cursor:pointer;
+    border:1px solid var(--line);
+    background:var(--surface-2);
+    color:var(--ink);
+    transition:transform .08s ease, background-color .12s ease, border-color .12s ease;
+  }
+  button:hover{border-color:var(--ink-soft);}
+  button:active{transform:translateY(1px);}
+  button:focus-visible{outline:2px solid var(--focus-ring); outline-offset:2px;}
+  button.primary{
+    background:var(--accent);
+    color:var(--accent-ink);
+    border-color:var(--accent);
+  }
+  button.primary:hover{filter:brightness(1.06);}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+
+  .hint-list{
+    margin:0;
+    padding-left:0;
+    list-style:none;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    font-size:13.5px;
+    color:var(--ink-soft);
+    line-height:1.5;
+  }
+  .hint-list li{display:flex;gap:8px;}
+  .hint-list kbd{
+    font-family:"IBM Plex Mono", monospace;
+    background:var(--surface-2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:1px 6px;
+    font-size:11.5px;
+    color:var(--ink);
+    flex:none;
+  }
+
+  .legend{
+    display:flex;
+    gap:14px;
+    flex-wrap:wrap;
+    font-size:12.5px;
+    color:var(--ink-soft);
+  }
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .swatch{width:11px;height:11px;border-radius:3px;border:1px solid var(--line);}
+  .swatch.given{background:var(--given-bg);}
+  .swatch.solved{background:var(--surface);color:var(--success);}
+
+  @media (max-width:600px){
+    body{padding-inline:16px;}
+    .layout{gap:24px;}
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *{transition:none !important;}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <span class="eyebrow">Logic puzzle · backtracking solver</span>
+    <h1>Sudoku Solver</h1>
+    <p class="sub">Type your puzzle into the grid — givens stay locked once you solve — and get the completed board instantly. A sample puzzle is loaded below to start.</p>
+  </header>
+
+  <div class="layout">
+    <div class="board-wrap">
+      <div class="board" id="board" role="grid" aria-label="Sudoku grid"></div>
+      <div class="status" id="status" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="statusText">Example puzzle loaded. Edit any cell, then press Solve.</span>
+      </div>
+      <div class="legend">
+        <span><span class="swatch given"></span>Example / given</span>
+        <span><span class="swatch solved"></span>Solved by the tool</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="card">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button class="primary" id="solveBtn" type="button">Solve</button>
+          <button id="checkBtn" type="button">Check for conflicts</button>
+          <button id="exampleBtn" type="button">Load example</button>
+          <button id="clearBtn" type="button">Clear grid</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>How to use it</h2>
+        <ul class="hint-list">
+          <li><kbd>type</kbd> Click a cell and type 1–9. Leave a cell empty for a blank.</li>
+          <li><kbd>⌫</kbd> Backspace or 0 clears a cell.</li>
+          <li><kbd>↑↓←→</kbd> Arrow keys move between cells.</li>
+          <li>Duplicate numbers in a row, column, or 3×3 box are outlined as you type.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var board = document.getElementById('board');
+  var statusEl = document.getElementById('status');
+  var statusText = document.getElementById('statusText');
+  var cells = [];
+
+  var EXAMPLE = [
+    [5,3,0, 0,7,0, 0,0,0],
+    [6,0,0, 1,9,5, 0,0,0],
+    [0,9,8, 0,0,0, 0,6,0],
+
+    [8,0,0, 0,6,0, 0,0,3],
+    [4,0,0, 8,0,3, 0,0,1],
+    [7,0,0, 0,2,0, 0,0,6],
+
+    [0,6,0, 0,0,0, 2,8,0],
+    [0,0,0, 4,1,9, 0,0,5],
+    [0,0,0, 0,8,0, 0,7,9]
+  ];
+
+  function buildBoard(){
+    for(var r=0;r<9;r++){
+      cells[r] = [];
+      for(var c=0;c<9;c++){
+        var input = document.createElement('input');
+        input.className = 'cell';
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.maxLength = 1;
+        input.autocomplete = 'off';
+        input.setAttribute('aria-label', 'Row ' + (r+1) + ', column ' + (c+1));
+        input.dataset.row = r;
+        input.dataset.col = c;
+        input.id = 'cell-' + r + '-' + c;
+        input.addEventListener('input', onInput);
+        input.addEventListener('keydown', onKeydown);
+        board.appendChild(input);
+        cells[r][c] = input;
+      }
+    }
+  }
+
+  function onInput(e){
+    var el = e.target;
+    var v = el.value.replace(/[^1-9]/g, '');
+    el.value = v.slice(-1);
+    el.classList.remove('solved');
+    setStatus('', '');
+    checkConflicts();
+  }
+
+  function onKeydown(e){
+    var r = parseInt(e.target.dataset.row, 10);
+    var c = parseInt(e.target.dataset.col, 10);
+    var moved = null;
+    if(e.key === 'ArrowRight') moved = [r, Math.min(8, c+1)];
+    else if(e.key === 'ArrowLeft') moved = [r, Math.max(0, c-1)];
+    else if(e.key === 'ArrowDown') moved = [Math.min(8, r+1), c];
+    else if(e.key === 'ArrowUp') moved = [Math.max(0, r-1), c];
+    else if(e.key === '0' || e.key === 'Delete'){ e.target.value=''; e.target.classList.remove('solved'); checkConflicts(); }
+    if(moved){
+      e.preventDefault();
+      cells[moved[0]][moved[1]].focus();
+    }
+  }
+
+  function readBoard(){
+    var g = [];
+    for(var r=0;r<9;r++){
+      g[r] = [];
+      for(var c=0;c<9;c++){
+        var v = cells[r][c].value;
+        g[r][c] = v ? parseInt(v, 10) : 0;
+      }
+    }
+    return g;
+  }
+
+  function writeBoard(g, markGiven){
+    for(var r=0;r<9;r++){
+      for(var c=0;c<9;c++){
+        var el = cells[r][c];
+        el.classList.remove('conflict','solved','given');
+        if(g[r][c]){
+          el.value = String(g[r][c]);
+          if(markGiven) el.classList.add('given');
+        } else {
+          el.value = '';
+        }
+      }
+    }
+  }
+
+  function setStatus(kind, msg){
+    statusEl.classList.remove('error','success');
+    if(kind) statusEl.classList.add(kind);
+    statusText.textContent = msg;
+  }
+
+  function findConflictCells(g){
+    var bad = [];
+    for(var i=0;i<9;i++){
+      bad.push.apply(bad, findDupes(rowCells(g,i)));
+      bad.push.apply(bad, findDupes(colCells(g,i)));
+    }
+    for(var br=0; br<9; br+=3){
+      for(var bc=0; bc<9; bc+=3){
+        bad.push.apply(bad, findDupes(boxCells(g,br,bc)));
+      }
+    }
+    return bad;
+  }
+
+  function rowCells(g,r){ var out=[]; for(var c=0;c<9;c++) if(g[r][c]) out.push([r,c,g[r][c]]); return out; }
+  function colCells(g,c){ var out=[]; for(var r=0;r<9;r++) if(g[r][c]) out.push([r,c,g[r][c]]); return out; }
+  function boxCells(g,br,bc){ var out=[]; for(var r=br;r<br+3;r++) for(var c=bc;c<bc+3;c++) if(g[r][c]) out.push([r,c,g[r][c]]); return out; }
+
+  function findDupes(list){
+    var seen = {};
+    var dupCoords = [];
+    list.forEach(function(item){ (seen[item[2]] = seen[item[2]] || []).push(item); });
+    Object.keys(seen).forEach(function(k){
+      if(seen[k].length > 1){
+        seen[k].forEach(function(item){ dupCoords.push([item[0], item[1]]); });
+      }
+    });
+    return dupCoords;
+  }
+
+  function checkConflicts(){
+    var g = readBoard();
+    var bad = findConflictCells(g);
+    for(var r=0;r<9;r++) for(var c=0;c<9;c++) cells[r][c].classList.remove('conflict');
+    bad.forEach(function(pos){ cells[pos[0]][pos[1]].classList.add('conflict'); });
+    return bad.length === 0;
+  }
+
+  function isSafe(g, row, col, num){
+    for(var i=0;i<9;i++){
+      if(g[row][i] === num) return false;
+      if(g[i][col] === num) return false;
+    }
+    var br = row - row%3, bc = col - col%3;
+    for(var r=br;r<br+3;r++) for(var c=bc;c<bc+3;c++) if(g[r][c] === num) return false;
+    return true;
+  }
+
+  function findBestEmpty(g){
+    // choose the empty cell with the fewest legal candidates (MRV heuristic)
+    var best = null, bestCount = 10;
+    for(var r=0;r<9;r++){
+      for(var c=0;c<9;c++){
+        if(g[r][c] === 0){
+          var count = 0;
+          for(var n=1;n<=9;n++) if(isSafe(g,r,c,n)) count++;
+          if(count < bestCount){
+            bestCount = count;
+            best = [r,c];
+            if(count === 0) return best;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  function solve(g){
+    var spot = findBestEmpty(g);
+    if(!spot) return true;
+    var r = spot[0], c = spot[1];
+    for(var n=1;n<=9;n++){
+      if(isSafe(g, r, c, n)){
+        g[r][c] = n;
+        if(solve(g)) return true;
+        g[r][c] = 0;
+      }
+    }
+    return false;
+  }
+
+  function handleSolve(){
+    if(!checkConflicts()){
+      setStatus('error', 'Fix the outlined duplicates before solving.');
+      return;
+    }
+    var g = readBoard();
+    var given = g.map(function(row){ return row.slice(); });
+    var t0 = performance.now();
+    var ok = solve(g);
+    var ms = Math.round(performance.now() - t0);
+    if(!ok){
+      setStatus('error', 'No solution exists for this puzzle — double-check the numbers.');
+      return;
+    }
+    for(var r=0;r<9;r++){
+      for(var c=0;c<9;c++){
+        cells[r][c].value = String(g[r][c]);
+        cells[r][c].classList.remove('conflict');
+        if(given[r][c]){
+          cells[r][c].classList.add('given');
+          cells[r][c].classList.remove('solved');
+        } else {
+          cells[r][c].classList.add('solved');
+          cells[r][c].classList.remove('given');
+        }
+      }
+    }
+    setStatus('success', 'Solved in ' + ms + ' ms.');
+  }
+
+  function handleCheck(){
+    var ok = checkConflicts();
+    if(ok) setStatus('success', 'No conflicts found.');
+    else setStatus('error', 'Duplicate numbers are outlined in red.');
+  }
+
+  function handleExample(){
+    writeBoard(EXAMPLE, true);
+    setStatus('', 'Example puzzle loaded. Edit any cell, then press Solve.');
+  }
+
+  function handleClear(){
+    writeBoard(Array.from({length:9}, function(){ return new Array(9).fill(0); }), false);
+    setStatus('', 'Grid cleared. Type a puzzle, then press Solve.');
+  }
+
+  buildBoard();
+  writeBoard(EXAMPLE, true);
+
+  document.getElementById('solveBtn').addEventListener('click', handleSolve);
+  document.getElementById('checkBtn').addEventListener('click', handleCheck);
+  document.getElementById('exampleBtn').addEventListener('click', handleExample);
+  document.getElementById('clearBtn').addEventListener('click', handleClear);
+})();
+</script>
+</body>
+</html>
