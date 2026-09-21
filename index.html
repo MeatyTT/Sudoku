@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/7.0.0/tesseract.min.js"></script>
 <style>
   :root{
     --bg:#eef1ef;
@@ -275,6 +276,79 @@
   .swatch.given{background:var(--given-bg);}
   .swatch.solved{background:var(--surface);color:var(--success);}
 
+  .sub.small{font-size:13px;}
+
+  .crop-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(10,14,12,0.72);
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+    z-index:50;
+  }
+  .crop-overlay[hidden]{display:none;}
+  .crop-overlay:not([hidden]){display:flex;}
+  .crop-panel{
+    background:var(--surface);
+    border-radius:12px;
+    padding:20px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    max-width:min(92vw, 520px);
+    box-shadow:var(--shadow);
+  }
+  .crop-title{
+    margin:0;
+    font-size:14px;
+    color:var(--ink-soft);
+    line-height:1.4;
+  }
+  .crop-stage{
+    position:relative;
+    line-height:0;
+    align-self:center;
+    touch-action:none;
+    user-select:none;
+  }
+  .crop-stage canvas{
+    display:block;
+    max-width:100%;
+    border-radius:4px;
+  }
+  .crop-box{
+    position:absolute;
+    border:2px solid var(--accent);
+    box-shadow:0 0 0 999px rgba(10,14,12,0.45);
+    cursor:move;
+    touch-action:none;
+  }
+  .crop-handle{
+    position:absolute;
+    right:-9px;
+    bottom:-9px;
+    width:18px;
+    height:18px;
+    border-radius:50%;
+    background:var(--accent);
+    border:2px solid var(--surface);
+    cursor:nwse-resize;
+    touch-action:none;
+  }
+  .crop-progress{
+    height:6px;
+    border-radius:999px;
+    background:var(--surface-2);
+    overflow:hidden;
+  }
+  .crop-progress-bar{
+    height:100%;
+    width:0%;
+    background:var(--accent);
+    transition:width .15s ease;
+  }
+
   @media (max-width:600px){
     body{padding-inline:16px;}
     .layout{gap:24px;}
@@ -317,6 +391,14 @@
         </div>
       </div>
       <div class="card">
+        <h2>Scan a photo</h2>
+        <p class="sub small">Take or upload a photo of a printed puzzle. The reader runs in your browser but needs an internet connection the first time, to download itself — then you align a square over the grid and it fills in the numbers for you to double-check.</p>
+        <div class="actions">
+          <button id="scanBtn" type="button">Choose photo</button>
+        </div>
+        <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+      </div>
+      <div class="card">
         <h2>How to use it</h2>
         <ul class="hint-list">
           <li><kbd>type</kbd> Click a cell and type 1–9. Leave a cell empty for a blank.</li>
@@ -325,6 +407,25 @@
           <li>Duplicate numbers in a row, column, or 3×3 box are outlined as you type.</li>
         </ul>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="crop-overlay" id="cropOverlay" hidden>
+  <div class="crop-panel">
+    <p class="crop-title" id="cropTitle">Drag the square over the outer edge of the grid, then confirm.</p>
+    <div class="crop-stage" id="cropStage">
+      <canvas id="cropCanvas"></canvas>
+      <div class="crop-box" id="cropBox">
+        <div class="crop-handle" id="cropHandle" aria-hidden="true"></div>
+      </div>
+    </div>
+    <div class="crop-progress" id="cropProgress" hidden>
+      <div class="crop-progress-bar" id="cropProgressBar"></div>
+    </div>
+    <div class="actions">
+      <button id="cropCancel" type="button">Cancel</button>
+      <button class="primary" id="cropConfirm" type="button">Use this crop</button>
     </div>
   </div>
 </div>
@@ -555,6 +656,225 @@
   function handleClear(){
     writeBoard(Array.from({length:9}, function(){ return new Array(9).fill(0); }), false);
     setStatus('', 'Grid cleared. Type a puzzle, then press Solve.');
+  }
+
+  // ---- Photo scan: align a square crop, then read digits with an OCR worker ----
+  var photoInput = document.getElementById('photoInput');
+  var scanBtn = document.getElementById('scanBtn');
+  var cropOverlay = document.getElementById('cropOverlay');
+  var cropCanvas = document.getElementById('cropCanvas');
+  var cropStage = document.getElementById('cropStage');
+  var cropBox = document.getElementById('cropBox');
+  var cropHandle = document.getElementById('cropHandle');
+  var cropCancelBtn = document.getElementById('cropCancel');
+  var cropConfirmBtn = document.getElementById('cropConfirm');
+  var cropProgress = document.getElementById('cropProgress');
+  var cropProgressBar = document.getElementById('cropProgressBar');
+
+  var scanState = { img: null, objectUrl: null, scaleBack: 1, rect: {x:0,y:0,size:0}, drag: null };
+
+  function openCropOverlay(img, objectUrl){
+    scanState.img = img;
+    scanState.objectUrl = objectUrl;
+    var maxDisplay = Math.min(480, window.innerWidth - 72);
+    var scale = Math.min(1, maxDisplay / img.naturalWidth, maxDisplay / img.naturalHeight);
+    var dw = Math.round(img.naturalWidth * scale);
+    var dh = Math.round(img.naturalHeight * scale);
+    cropCanvas.width = dw;
+    cropCanvas.height = dh;
+    cropStage.style.width = dw + 'px';
+    cropStage.style.height = dh + 'px';
+    var ctx = cropCanvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, dw, dh);
+    scanState.scaleBack = img.naturalWidth / dw;
+
+    var size = Math.round(Math.min(dw, dh) * 0.9);
+    scanState.rect = { x: Math.round((dw - size) / 2), y: Math.round((dh - size) / 2), size: size };
+    applyCropRect();
+    cropProgress.hidden = true;
+    cropProgressBar.style.width = '0%';
+    cropOverlay.hidden = false;
+  }
+
+  function applyCropRect(){
+    var r = scanState.rect;
+    cropBox.style.left = r.x + 'px';
+    cropBox.style.top = r.y + 'px';
+    cropBox.style.width = r.size + 'px';
+    cropBox.style.height = r.size + 'px';
+  }
+
+  function closeCropOverlay(){
+    cropOverlay.hidden = true;
+    if(scanState.objectUrl){ URL.revokeObjectURL(scanState.objectUrl); }
+    scanState.img = null;
+    scanState.objectUrl = null;
+  }
+
+  cropBox.addEventListener('pointerdown', function(e){
+    if(e.target === cropHandle) return;
+    scanState.drag = { mode:'move', startX:e.clientX, startY:e.clientY, orig:{x:scanState.rect.x,y:scanState.rect.y} };
+    cropBox.setPointerCapture(e.pointerId);
+  });
+  cropHandle.addEventListener('pointerdown', function(e){
+    e.stopPropagation();
+    scanState.drag = { mode:'resize', startX:e.clientX, startY:e.clientY, orig:{size:scanState.rect.size} };
+    cropHandle.setPointerCapture(e.pointerId);
+  });
+  window.addEventListener('pointermove', function(e){
+    if(!scanState.drag) return;
+    var dx = e.clientX - scanState.drag.startX;
+    var dy = e.clientY - scanState.drag.startY;
+    var stageW = cropCanvas.width, stageH = cropCanvas.height;
+    if(scanState.drag.mode === 'move'){
+      var nx = scanState.drag.orig.x + dx;
+      var ny = scanState.drag.orig.y + dy;
+      var size = scanState.rect.size;
+      scanState.rect.x = Math.max(0, Math.min(stageW - size, nx));
+      scanState.rect.y = Math.max(0, Math.min(stageH - size, ny));
+    } else {
+      var delta = Math.max(dx, dy);
+      var newSize = Math.max(40, scanState.drag.orig.size + delta);
+      var maxSize = Math.min(stageW - scanState.rect.x, stageH - scanState.rect.y);
+      scanState.rect.size = Math.min(newSize, maxSize);
+    }
+    applyCropRect();
+  });
+  window.addEventListener('pointerup', function(){ scanState.drag = null; });
+
+  scanBtn.addEventListener('click', function(){ photoInput.value = ''; photoInput.click(); });
+
+  photoInput.addEventListener('change', function(){
+    var file = photoInput.files && photoInput.files[0];
+    if(!file) return;
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function(){ openCropOverlay(img, url); };
+    img.onerror = function(){ URL.revokeObjectURL(url); setStatus('error', "Couldn't open that photo — try a different file."); };
+    img.src = url;
+  });
+
+  cropCancelBtn.addEventListener('click', closeCropOverlay);
+
+  function otsuThreshold(gray){
+    var hist = new Array(256).fill(0);
+    for(var i=0;i<gray.length;i++) hist[gray[i]]++;
+    var total = gray.length, sum = 0;
+    for(var t=0;t<256;t++) sum += t * hist[t];
+    var sumB=0, wB=0, wF=0, varMax=0, threshold=127;
+    for(var t2=0;t2<256;t2++){
+      wB += hist[t2];
+      if(wB===0) continue;
+      wF = total - wB;
+      if(wF===0) break;
+      sumB += t2*hist[t2];
+      var mB = sumB/wB, mF = (sum-sumB)/wF;
+      var varBetween = wB*wF*(mB-mF)*(mB-mF);
+      if(varBetween > varMax){ varMax = varBetween; threshold = t2; }
+    }
+    return threshold;
+  }
+
+  function extractCellCanvas(sourceCanvas, row, col){
+    var cellSize = sourceCanvas.width / 9;
+    var inset = cellSize * 0.16;
+    var sx = col * cellSize + inset, sy = row * cellSize + inset, sSize = cellSize - inset * 2;
+    var OUT = 120, pad = OUT * 0.14;
+    var work = document.createElement('canvas');
+    work.width = OUT; work.height = OUT;
+    var wctx = work.getContext('2d');
+    wctx.fillStyle = '#fff';
+    wctx.fillRect(0, 0, OUT, OUT);
+    wctx.drawImage(sourceCanvas, sx, sy, sSize, sSize, pad, pad, OUT - 2*pad, OUT - 2*pad);
+    var imgData = wctx.getImageData(0, 0, OUT, OUT);
+    var d = imgData.data;
+    var gray = new Uint8ClampedArray(OUT * OUT);
+    for(var i=0, p=0; i<d.length; i+=4, p++){
+      gray[p] = (0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]) | 0;
+    }
+    var thr = otsuThreshold(gray);
+    var darkCount = 0;
+    for(var p2=0; p2<gray.length; p2++) if(gray[p2] < thr) darkCount++;
+    var darkRatio = darkCount / gray.length;
+    var invert = darkRatio > 0.5;
+    var inkRatio = invert ? (1 - darkRatio) : darkRatio;
+    for(var p3=0, q=0; p3<d.length; p3+=4, q++){
+      var isDark = gray[q] < thr;
+      var isInk = invert ? !isDark : isDark;
+      var v = isInk ? 0 : 255;
+      d[p3] = d[p3+1] = d[p3+2] = v; d[p3+3] = 255;
+    }
+    wctx.putImageData(imgData, 0, 0);
+    return { canvas: work, inkRatio: inkRatio };
+  }
+
+  function buildCroppedCanvas(){
+    var OUT = 720;
+    var canvas = document.createElement('canvas');
+    canvas.width = OUT; canvas.height = OUT;
+    var ctx = canvas.getContext('2d');
+    var r = scanState.rect, sb = scanState.scaleBack;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, OUT, OUT);
+    ctx.drawImage(scanState.img, r.x*sb, r.y*sb, r.size*sb, r.size*sb, 0, 0, OUT, OUT);
+    return canvas;
+  }
+
+  cropConfirmBtn.addEventListener('click', function(){
+    if(typeof Tesseract === 'undefined'){
+      setStatus('error', "The number reader didn't load — check your internet connection and try again.");
+      closeCropOverlay();
+      return;
+    }
+    var croppedCanvas = buildCroppedCanvas();
+    cropConfirmBtn.disabled = true;
+    cropCancelBtn.disabled = true;
+    cropProgress.hidden = false;
+    document.getElementById('cropTitle').textContent = 'Reading numbers… this can take a little while the first time.';
+    runScan(croppedCanvas).then(function(grid){
+      closeCropOverlay();
+      cropConfirmBtn.disabled = false;
+      cropCancelBtn.disabled = false;
+      writeBoard(grid, true);
+      checkConflicts();
+      setStatus('', 'Photo read — check the numbers below, then press Solve. A few digits can come out wrong on blurry or angled photos.');
+    }).catch(function(err){
+      closeCropOverlay();
+      cropConfirmBtn.disabled = false;
+      cropCancelBtn.disabled = false;
+      setStatus('error', "Couldn't read that photo — try a straighter, better-lit shot, or enter the puzzle by hand.");
+    });
+  });
+
+  function runScan(croppedCanvas){
+    return Tesseract.createWorker('eng').then(function(worker){
+      return worker.setParameters({
+        tessedit_char_whitelist: '123456789',
+        tessedit_pageseg_mode: '10'
+      }).then(function(){
+        var grid = [];
+        for(var r=0;r<9;r++) grid.push(new Array(9).fill(0));
+        var chain = Promise.resolve();
+        var done = 0;
+        var _loop = function(r, c){
+          chain = chain.then(function(){
+            var extracted = extractCellCanvas(croppedCanvas, r, c);
+            var step = function(){
+              done++;
+              cropProgressBar.style.width = Math.round(done/81*100) + '%';
+            };
+            if(extracted.inkRatio < 0.02){ step(); return; }
+            return worker.recognize(extracted.canvas).then(function(res){
+              var text = (res.data.text || '').replace(/[^1-9]/g, '');
+              grid[r][c] = text ? parseInt(text[0], 10) : 0;
+              step();
+            });
+          });
+        };
+        for(var r=0;r<9;r++) for(var c=0;c<9;c++) _loop(r,c);
+        return chain.then(function(){ return worker.terminate(); }).then(function(){ return grid; });
+      });
+    });
   }
 
   buildBoard();
